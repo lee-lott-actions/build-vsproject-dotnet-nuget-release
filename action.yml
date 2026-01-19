@@ -1,36 +1,183 @@
-name: GitHub Action Name
-description: A GitHub Action Descriptionto Open a specified GitHub issue using the GitHub API
+name: Build Visual Studio .Net Project NuGet Release
+description: Create a NuGet packaGE for a Visual Studio .Net project build
 author: Lee Lott
 
 inputs:
-  input-1:
-    description: 'Description of input'
+  project-file-path:
+    description: 'The path to the Visual Studio SQL project file (e.g., .csproj, .vbproj) to be built'
     required: true
-  input-2:
-    description: 'Description of input'
+  prerelease:
+    description: 'Mark the release as a pre-release (true/false)'
+    required: true    
+  prerelease-suffix:
+    description: 'The name to append to the version number on releases that are marked as pre-release.  If not a pre-release, the release version will be based on the latest pre-release version using this name.'
     required: true
-  input-3:
-    description: 'Description of input'
+  package-name:
+    description: 'The base name for the nupkg file containing the build artifacts'
+    required: true
+  configuration:
+    description: 'The build configuration to use for the .NET project (e.g., Debug, Release)'
+    required: true
+  token:
+    description: 'The GitHub token used for authentication to create the release'
     required: true
 
 outputs:
-  result:
-    description: 'Result of the action ("success" or "failure")'
-    value: ${{ steps.action.outputs.result }}
-  error-message:
-    description: 'Error message if the action fails'
-    value: ${{ steps.action.outputs.error-message }}
+  version-tag:
+    description: 'The new tag created for the release'
+    value: ${{ steps.new-tag.outputs.version-tag }}
+  version-number:
+    description: 'The new tag with the "v" prefix removed'
+    value: ${{ steps.new-tag.outputs.version-number }}
+  nuget-file-name:
+    description: 'The name of the NuGet file containing the build artifacts (with the .nupkg extension)'
+    value: ${{ steps.generate-nuget-file-name.outputs.nuget_file_name }}
+  nuget-file-path:
+    description: 'The path to the NuGet file containing the build objects'
+    value: ${{ steps.generate-nuget-file-path.outputs.package_file_path }}    
+  build-status:
+    description: 'The build/release outcome: Release Created, No Release, or Release Failed.'
+    value: ${{ steps.set-build-status.outputs.build_status }}          
 
 runs:
-  using: composite
+  using: "composite"
   steps:
-    - name: Action Name
-      id: action
+    - name: Get Next Semantic Version Number
+      id: new-tag
+      uses: lee-lott-actions/get-next-semantic-version-number@v2
+      with:
+        prerelease: ${{ inputs.prerelease }}
+        prerelease-identifier: ${{ inputs.prerelease-suffix }}
+        owner: ${{ github.repository_owner }}
+        repo-name: ${{ github.event.repository.name }}
+        branch: ${{ github.head_ref }}
+        token: ${{ inputs.token }}
+
+    - name: Set Build Status
+      id: set-build-status
+      run: |
+        if ("${{ steps.new-tag.outputs.result }}" -eq "success") {
+          if ("${{ steps.new-tag.outputs.release-type }}" -ne "none") {
+            "build_status=Release Created" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "build_status=No Release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+        } else {
+          "build_status=Release Failed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        }
+      shell: pwsh        
+
+    - name: Generate NuGet File Name
+      id: generate-nuget-file-name
+      if: steps.set-build-status.outputs.build_status == 'Release Created'
+      run: |
+        $nugetFileName = "${{ inputs.package-name }}.${{ steps.new-tag.outputs.version-number }}.nupkg"
+        Write-Output "NuGet File Name:  $nugetFileName"
+        Write-Output "nuget_file_name=$nugetFileName" >> $env:GITHUB_OUTPUT
       shell: pwsh
-      run: |        
-        . "${{ github.action_path }}/action.ps1"
-        run_action `
-          -Input1 "${{ inputs.input-1 }}" `
-          -Input2 "${{ inputs.input-2 }}" `
-          -Inpute3 "${{ inputs.input-3 }}" `
-      
+         
+    - name: Publish
+      if: steps.set-build-status.outputs.build_status == 'Release Created'    
+      run: dotnet pack ${{ inputs.project-file-path }} /p:Version=${{ steps.new-tag.outputs.version-number }} --configuration ${{ inputs.configuration }} --output ./publish
+      shell: pwsh
+        
+    - name: Generate NuGet Release File Path
+      if: steps.set-build-status.outputs.build_status == 'Release Created'
+      id: generate-nuget-file-path
+      run: |
+        Write-Output "Generating NuGet File Path..."
+        $packageFilePath = "${{ github.workspace }}/publish/${{ steps.generate-nuget-file-name.outputs.nuget_file_name }}"
+        Write-Output "NuGet File Path:  $packageFilePath"
+        Write-Output "package_file_path=$packageFilePath" >> $env:GITHUB_OUTPUT        
+      shell: pwsh
+
+    - name: Create Git Tag for new version
+      id: create-git-tag
+      if: steps.set-build-status.outputs.build_status == 'Release Created' && inputs.prerelease == 'true'
+      uses: lee-lott-actions/create-git-tag@v1
+      with:
+        branch-name: ${{ github.base_ref }}
+        tag-name: ${{ steps.new-tag.outputs.version-tag }}
+        tag-message: 'Tag generated for Pull Request #${{ github.event.pull_request.number }}'
+        repo-name: ${{ github.event.repository.name }}
+        org-name: ${{ github.repository_owner }}
+        token: ${{ inputs.token }}      
+
+    - name: Set Current Date and Time
+      id: set-date-time
+      if: steps.set-build-status.outputs.build_status == 'Release Created' && inputs.prerelease == 'false'      
+      run: |
+        $currentDateTime = (Get-Date).ToUniversalTime().AddHours(-5).ToString("MM/dd/yyyy hh:mm:ss tt")
+        "current_date_time=$currentDateTime" >> $env:GITHUB_OUTPUT
+      shell: pwsh
+
+    - name: Create GitHub Release
+      id: create-release
+      if: steps.set-build-status.outputs.build_status == 'Release Created' && inputs.prerelease == 'false'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.new-tag.outputs.version-tag }}
+        name: ${{ steps.new-tag.outputs.version-tag }}
+        draft: false
+        prerelease: ${{ inputs.prerelease }}
+        generate_release_notes: true
+        files: ${{ inputs.prerelease != 'true' && steps.generate-nuget-file-path.outputs.package_file_path || '' }}
+        body: |
+          Automated Release from the ${{ github.head_ref }} branch via [Pull Request #${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }}).
+          Released on: ${{ steps.set-date-time.outputs.current_date_time }} CDT
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+
+    - name: Set PR Message
+      id: set-pr-message
+      shell: pwsh
+      run: |
+        switch ($env:BUILD_STATUS) {
+          "Release Failed" {
+            "pr_message=No release version was created for this Pull Request because the tag creation step did not succeed." | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          "Release Created" {
+            "pr_message=This Pull Request created a new release version: $env:NEW_TAG_VERSION_TAG" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          "No Release" {
+            "pr_message=No release version was created for this Pull Request because conventional commits did not indicate an increase to the MAJOR, MINOR or PATCH." | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          Default {
+            "pr_message=Unknown build status." | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+        }
+      env:
+        BUILD_STATUS: ${{ steps.set-build-status.outputs.build_status }}
+        NEW_TAG_VERSION_TAG: ${{ steps.new-tag.outputs.version-tag }}        
+
+    - name: Comment on Pull Request
+      id: comment-pr
+      uses: lee-lott-actions/set-pull-request-review-status@v1
+      with:
+        pr-number: ${{ github.event.pull_request.number }}
+        repo-name: ${{ github.event.repository.name }}
+        org-name: ${{ github.repository_owner }}
+        pr-status: 'COMMENT'
+        pr-message: '${{ steps.set-pr-message.outputs.pr_message }}'
+        token: ${{ inputs.token }}        
+
+    - name: Add to Job Summary
+      run: |
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "# GitHub Release Summary"
+        switch ("${{ steps.set-build-status.outputs.build_status }}") {
+          "Release Created" {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Created release **${{ steps.new-tag.outputs.version-tag }}** for Pull Request [#${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }})."
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Release URL: [${{ steps.new-tag.outputs.version-tag }}](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/tag/${{ steps.new-tag.outputs.version-tag }})"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Package: ${{ steps.generate-nuget-file-name.outputs.nuget_file_name }}"
+          }
+          "No Release" {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "No release created due to no qualifying commits (e.g., feat or fix required)."
+          }
+          "Release Failed" {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "No release created because the tag creation step did not succeed."
+          }
+          Default {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Unknown build status."
+          }
+        }
+      shell: pwsh
