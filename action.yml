@@ -50,7 +50,7 @@ runs:
         prerelease-identifier: ${{ inputs.prerelease-suffix }}
         owner: ${{ github.repository_owner }}
         repo-name: ${{ github.event.repository.name }}
-        branch: ${{ github.head_ref }}
+        branch: ${{ github.base_ref }}
         token: ${{ inputs.token }}
 
     - name: Set Build Status
@@ -123,7 +123,7 @@ runs:
         generate_release_notes: true
         files: ${{ inputs.prerelease != 'true' && steps.generate-nuget-file-path.outputs.package_file_path || '' }}
         body: |
-          Automated Release from the ${{ github.head_ref }} branch via [Pull Request #${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }}).
+          Automated Release to the ${{ github.base_ref }} branch via [Pull Request #${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }}).
           Released on: ${{ steps.set-date-time.outputs.current_date_time }} CDT
       env:
         GITHUB_TOKEN: ${{ inputs.token }}
