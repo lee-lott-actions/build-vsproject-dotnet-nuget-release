@@ -114,7 +114,7 @@ runs:
     - name: Create GitHub Release
       id: create-release
       if: steps.set-build-status.outputs.build_status == 'Release Created' && inputs.prerelease == 'false'
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       with:
         tag_name: ${{ steps.new-tag.outputs.version-tag }}
         name: ${{ steps.new-tag.outputs.version-tag }}
